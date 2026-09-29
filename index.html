@@ -35,7 +35,7 @@
     border: 3px solid #d1d5db;
   }
   #status.error { color: #b91c1c; border-color: #fca5a5; font-size: 1.2rem; }
-  #voiceWarn { color: #b45309; font-weight: 700; margin: 0 0 12px; }
+  #voiceWarn { color: #b45309; font-weight: 700; margin: 0 0 12px; white-space: pre-line; }
   #answer {
     min-height: 120px; padding: 16px; margin-bottom: 12px;
     background: #fff; border-radius: 14px; border: 1px solid #d1d5db;
@@ -167,6 +167,10 @@ function lsDel(k) { try { localStorage.removeItem(k); } catch {} }
 // ---------- 음성 ----------
 const synth = window.speechSynthesis;
 
+// 앱(안드로이드) 안에서 열리면 음성은 앱이 담당 (화면이 꺼져도 읽기 위해)
+const nativeSpeech = () => window.AndroidSpeech || null;
+let nativeSent = null; // 앱에 마지막으로 보낸 줄 목록 (같으면 다시 보내지 않음)
+
 function pickKoreanVoice() {
   if (!synth) return;
   const voices = synth.getVoices();
@@ -185,7 +189,9 @@ function pickKoreanVoice() {
   }
 }
 
-if (!synth) {
+if (nativeSpeech()) {
+  // 한국어 음성 확인은 앱이 onNativeNotice 로 알려줌
+} else if (!synth) {
   $("voiceWarn").hidden = false;
   $("voiceWarn").textContent = "⚠ 이 브라우저는 음성 읽기(speechSynthesis)를 지원하지 않습니다.";
 } else {
@@ -195,7 +201,7 @@ if (!synth) {
 
 // 버튼 탭 직후 호출: 빈 발화로 음성 엔진을 깨워둠 (모바일 자동재생 제한 대응)
 function unlockSpeech() {
-  if (!synth || synth.speaking) return; // 이미 읽는 중이면 깨울 필요 없음 (끊지 않도록)
+  if (nativeSpeech() || !synth || synth.speaking) return; // 앱이면 불필요, 읽는 중이면 끊지 않도록
   try {
     synth.cancel();
     const u = new SpeechSynthesisUtterance(" ");
@@ -278,6 +284,16 @@ function updatePlayUI() {
 }
 
 function playFrom(lineIdx) {
+  const nat = nativeSpeech();
+  if (nat) {
+    if (!player.lines.length) return;
+    if (nativeSent !== player.lines) {
+      nat.load(JSON.stringify(player.lines), parseFloat(rateEl.value));
+      nativeSent = player.lines;
+    }
+    nat.playFrom(Math.max(0, Math.min(lineIdx, player.lines.length - 1)));
+    return; // 상태 표시는 onNativeSpeech 가 갱신
+  }
   if (!synth || !player.lines.length) return;
   synth.cancel();
   const myToken = ++player.token;
@@ -319,6 +335,8 @@ function playFrom(lineIdx) {
 
 // 일시정지 = 멈추고 위치 기억 (안드로이드는 pause()가 불안정해서 줄 처음부터 다시 읽음)
 function pausePlayer() {
+  const nat = nativeSpeech();
+  if (nat) { nat.pause(); return; }
   player.token++;
   player.playing = false;
   if (synth) synth.cancel();
@@ -338,6 +356,28 @@ function sectionStarts() {
   return player.lines.map((l, i) => l.section ? i : -1).filter(i => i >= 0);
 }
 
+// ---------- 앱이 보내는 상태 ----------
+window.onNativeSpeech = (s) => {
+  player.playing = s.state === "playing";
+  if (typeof s.pos === "number") player.pos = s.pos;
+  if (s.state === "ended") {
+    $("btnPlay").textContent = "▶ 재생";
+    if (!player.quiet) setStatus("대기");
+    const done = player.onDone;
+    player.onDone = null;
+    if (done) done();
+    return;
+  }
+  updatePlayUI();
+  if (s.message && !player.quiet) setStatus(s.message + posLabel());
+};
+
+window.onNativeNotice = (text) => {
+  const warn = $("voiceWarn");
+  warn.textContent = warn.hidden || !warn.textContent ? text : warn.textContent + "\n" + text;
+  warn.hidden = false;
+};
+
 // ---------- 속도 슬라이더 ----------
 const savedRate = parseFloat(lsGet(RATE_STORAGE));
 if (savedRate >= 0.1 && savedRate <= 1.5) rateEl.value = savedRate;
@@ -345,6 +385,8 @@ $("rateVal").textContent = parseFloat(rateEl.value).toFixed(1);
 rateEl.addEventListener("input", () => {
   $("rateVal").textContent = parseFloat(rateEl.value).toFixed(1);
   lsSet(RATE_STORAGE, rateEl.value);
+  const nat = nativeSpeech();
+  if (nat) nat.setRate(parseFloat(rateEl.value));
 });
 
 // ---------- API 키 ----------
