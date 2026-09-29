@@ -50,6 +50,9 @@
   }
   #keyState { margin: 0 0 12px; font-weight: 700; }
   #fileInput { display: none; }
+  .player .row { gap: 8px; }
+  .player .row button { padding: 20px 4px; font-size: 1.1rem; }
+  .player .row .play { flex: 1.4; background: #2563eb; }
 </style>
 </head>
 <body>
@@ -66,9 +69,17 @@
 
 <div id="answer">답변이 여기에 표시됩니다.</div>
 
-<div class="row">
-  <button id="btnReplay" class="gray">🔁 다시 듣기</button>
-  <button id="btnStop" class="red">⏹ 멈춤</button>
+<div class="player">
+  <div class="row">
+    <button id="btnPrevSection" class="gray">⏪ 이전 목차</button>
+    <button id="btnNextSection" class="gray">다음 목차 ⏩</button>
+  </div>
+  <div class="row">
+    <button id="btnPrevLine" class="gray">◀ 이전 줄</button>
+    <button id="btnPlay" class="play">▶ 재생</button>
+    <button id="btnNextLine" class="gray">다음 줄 ▶</button>
+  </div>
+  <button id="btnReplay" class="gray">🔁 처음부터</button>
 </div>
 
 <div class="box">
@@ -184,7 +195,7 @@ if (!synth) {
 
 // 버튼 탭 직후 호출: 빈 발화로 음성 엔진을 깨워둠 (모바일 자동재생 제한 대응)
 function unlockSpeech() {
-  if (!synth) return;
+  if (!synth || synth.speaking) return; // 이미 읽는 중이면 깨울 필요 없음 (끊지 않도록)
   try {
     synth.cancel();
     const u = new SpeechSynthesisUtterance(" ");
@@ -222,15 +233,12 @@ function toSpeakable(line) {
   return s.replace(/\s*,\s*(,\s*)+/g, ", ").replace(/\s+,/g, ",").replace(/\s+/g, " ").replace(/^,\s*|,\s*$/g, "").trim();
 }
 
-// 줄 단위로 읽기 (줄바꿈 = 잠깐 쉼). 긴 줄은 문장/쉼표 기준으로 다시 나눔 (안드로이드 끊김 방지)
-function splitSentences(text) {
-  const parts = text
-    .split(/\n+/)
-    .map(toSpeakable)
-    .flatMap(line => line.split(/(?<=[.!?。？！])\s+/))
+// 한 줄을 읽기 조각으로 나눔. 긴 줄은 문장/쉼표 기준으로 다시 나눔 (안드로이드 끊김 방지)
+function toChunks(line) {
+  const parts = toSpeakable(line)
+    .split(/(?<=[.!?。？！])\s+/)
     .map(s => s.trim())
     .filter(Boolean);
-  // 너무 긴 문장은 쉼표 기준으로 한 번 더 나눔
   const out = [];
   for (const p of parts) {
     if (p.length <= 120) { out.push(p); continue; }
@@ -244,19 +252,57 @@ function splitSentences(text) {
   return out;
 }
 
-let speakToken = 0;
+// ---------- 플레이어 (줄 단위 이동) ----------
+// 줄 = 화면의 한 줄, 목차 = Ⅰ. Ⅱ. 로 시작하는 줄
+const player = { lines: [], pos: 0, playing: false, token: 0, onDone: null, quiet: false };
 
-function speak(text, { onDone } = {}) {
-  if (!synth) return;
+function loadText(text, onDone, quiet) {
+  player.lines = text.split(/\n+/)
+    .map(l => l.trim())
+    .filter(Boolean)
+    .map(l => ({ chunks: toChunks(l), section: /^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]/.test(l) }))
+    .filter(l => l.chunks.length);
+  player.text = text;
+  player.pos = 0;
+  player.onDone = onDone || null;
+  player.quiet = !!quiet;          // 오류 안내처럼 상태 표시를 건드리면 안 되는 음성
+}
+
+function posLabel() {
+  return player.lines.length ? " · " + (player.pos + 1) + "/" + player.lines.length + "줄" : "";
+}
+
+function updatePlayUI() {
+  $("btnPlay").textContent = player.playing ? "⏸ 일시정지" : "▶ 재생";
+  if (player.lines.length && !player.quiet) setStatus((player.playing ? "읽는 중" : "일시정지") + posLabel());
+}
+
+function playFrom(lineIdx) {
+  if (!synth || !player.lines.length) return;
   synth.cancel();
-  const myToken = ++speakToken;
-  const sentences = splitSentences(text);
-  let i = 0;
+  const myToken = ++player.token;
+  player.pos = Math.max(0, Math.min(lineIdx, player.lines.length - 1));
+  player.playing = true;
+  updatePlayUI();
+  let chunk = 0;
 
   const next = () => {
-    if (myToken !== speakToken) return;          // 멈춤/새 재생으로 취소됨
-    if (i >= sentences.length) { onDone && onDone(); return; }
-    const u = new SpeechSynthesisUtterance(sentences[i++]);
+    if (myToken !== player.token) return;          // 일시정지/이동으로 취소됨
+    const line = player.lines[player.pos];
+    if (chunk >= line.chunks.length) {             // 이 줄 끝 → 다음 줄
+      if (player.pos + 1 >= player.lines.length) { // 전체 끝
+        player.playing = false;
+        $("btnPlay").textContent = "▶ 재생";
+        player.pos = 0;                            // 다음 재생은 처음부터
+        if (!player.quiet) setStatus("대기");
+        player.onDone && player.onDone();
+        return;
+      }
+      player.pos++;
+      chunk = 0;
+      updatePlayUI();
+    }
+    const u = new SpeechSynthesisUtterance(player.lines[player.pos].chunks[chunk++]);
     u.lang = "ko-KR";
     if (koVoice) u.voice = koVoice;
     u.rate = parseFloat(rateEl.value);
@@ -271,9 +317,25 @@ function speak(text, { onDone } = {}) {
   setTimeout(next, 80);
 }
 
-function stopSpeech() {
-  speakToken++;
+// 일시정지 = 멈추고 위치 기억 (안드로이드는 pause()가 불안정해서 줄 처음부터 다시 읽음)
+function pausePlayer() {
+  player.token++;
+  player.playing = false;
   if (synth) synth.cancel();
+  updatePlayUI();
+}
+
+function speak(text, { onDone, quiet } = {}) {
+  loadText(text, onDone, quiet);
+  playFrom(0);
+}
+
+function stopSpeech() {
+  pausePlayer();
+}
+
+function sectionStarts() {
+  return player.lines.map((l, i) => l.section ? i : -1).filter(i => i >= 0);
 }
 
 // ---------- 속도 슬라이더 ----------
@@ -311,7 +373,7 @@ $("btnClearKey").addEventListener("click", () => {
 // ---------- 오류 안내 (화면 + 음성) ----------
 function reportError(screenMsg, voiceMsg) {
   setStatus("오류: " + screenMsg, true);
-  speak(voiceMsg || screenMsg, { onDone: () => {} });
+  speak(voiceMsg || screenMsg, { quiet: true });
 }
 
 // ---------- 버튼: 음성 테스트 ----------
@@ -321,17 +383,58 @@ $("btnVoiceTest").addEventListener("click", () => {
   speak(TEST_TEXT, { onDone: () => setStatus("대기") });
 });
 
-// ---------- 버튼: 다시 듣기 / 멈춤 ----------
+// ---------- 버튼: 플레이어 조작 ----------
+// 답변이 아닌 음성(테스트/오류)이 올라가 있으면 답변으로 다시 불러옴
+function ensureAnswerLoaded() {
+  if (!lastAnswer) { setStatus("아직 답변이 없습니다", true); return false; }
+  if (player.quiet || player.text !== lastAnswer) loadText(lastAnswer);
+  return true;
+}
+
 $("btnReplay").addEventListener("click", () => {
   unlockSpeech();
-  if (!lastAnswer) { setStatus("아직 답변이 없습니다", true); return; }
-  setStatus("읽는 중");
-  speak(lastAnswer, { onDone: () => setStatus("대기") });
+  if (!ensureAnswerLoaded()) return;
+  playFrom(0);
 });
 
-$("btnStop").addEventListener("click", () => {
-  stopSpeech();
-  setStatus("대기");
+$("btnPlay").addEventListener("click", () => {
+  if (player.playing) { pausePlayer(); return; }
+  unlockSpeech();
+  if (!ensureAnswerLoaded()) return;
+  playFrom(player.pos);
+});
+
+$("btnPrevLine").addEventListener("click", () => {
+  unlockSpeech();
+  if (!ensureAnswerLoaded()) return;
+  playFrom(player.pos - 1);
+});
+
+$("btnNextLine").addEventListener("click", () => {
+  unlockSpeech();
+  if (!ensureAnswerLoaded()) return;
+  if (player.pos + 1 >= player.lines.length) { setStatus("마지막 줄입니다" + posLabel()); return; }
+  playFrom(player.pos + 1);
+});
+
+// 이전 목차: 목차 중간이면 그 목차 처음으로, 이미 목차 처음이면 앞 목차로 (음악 앱의 이전 곡과 같은 방식)
+$("btnPrevSection").addEventListener("click", () => {
+  unlockSpeech();
+  if (!ensureAnswerLoaded()) return;
+  const starts = sectionStarts();
+  const cur = starts.filter(i => i <= player.pos).pop();
+  if (cur === undefined) { playFrom(0); return; }
+  if (cur < player.pos) { playFrom(cur); return; }
+  const prev = starts.filter(i => i < cur).pop();
+  playFrom(prev === undefined ? 0 : prev);
+});
+
+$("btnNextSection").addEventListener("click", () => {
+  unlockSpeech();
+  if (!ensureAnswerLoaded()) return;
+  const nxt = sectionStarts().find(i => i > player.pos);
+  if (nxt === undefined) { setStatus("마지막 목차입니다" + posLabel()); return; }
+  playFrom(nxt);
 });
 
 // ---------- 버튼: 사진 찍고 듣기 ----------
@@ -350,8 +453,8 @@ $("fileInput").addEventListener("change", async (e) => {
   }
 
   try {
-    setStatus("사진 처리 중");
     stopSpeech();
+    setStatus("사진 처리 중");
     const dataUrl = await resizeToDataUrl(file);
 
     setStatus("AI 분석 중 (1~2분)");
@@ -360,8 +463,8 @@ $("fileInput").addEventListener("change", async (e) => {
 
     lastAnswer = text;
     answerEl.textContent = text + "\n\n(공백 포함 " + text.length.toLocaleString() + "자)";
-    setStatus("읽는 중");
-    speak(text, { onDone: () => setStatus("대기") });
+    loadText(text);
+    playFrom(0);
   } catch (err) {
     answerEl.textContent = "";
     const m = describeError(err);
