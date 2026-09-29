@@ -2,7 +2,7 @@
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
-export function loadPage({ bridge = null, synth = undefined } = {}) {
+export function loadPage({ bridge = null, synth = undefined, storage = {} } = {}) {
   const html = readFileSync(new URL("../../index.html", import.meta.url), "utf8");
   const script = html.match(/<script>([\s\S]*)<\/script>/)[1];
 
@@ -25,7 +25,7 @@ export function loadPage({ bridge = null, synth = undefined } = {}) {
     return els.get(id);
   };
 
-  const store = new Map();
+  const store = new Map(Object.entries(storage));
   const window = { AndroidSpeech: bridge, speechSynthesis: synth };
   const ctx = {
     window,

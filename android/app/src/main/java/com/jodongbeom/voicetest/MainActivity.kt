@@ -2,10 +2,13 @@ package com.jodongbeom.voicetest
 
 import android.Manifest
 import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.speech.tts.TextToSpeech
+import android.view.ViewGroup
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -13,7 +16,9 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.webkit.WebViewAssetLoader
 import org.json.JSONObject
@@ -49,7 +54,7 @@ class MainActivity : ComponentActivity() {
         web.settings.javaScriptEnabled = true
         web.settings.domStorageEnabled = true
         web.settings.allowFileAccess = false
-        web.addJavascriptInterface(SpeechBridge(applicationContext), "AndroidSpeech")
+        web.addJavascriptInterface(SpeechBridge(applicationContext) { notice(it) }, "AndroidSpeech")
         web.webViewClient = object : WebViewClient() {
             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
                 loader.shouldInterceptRequest(request.url)
@@ -60,6 +65,14 @@ class MainActivity : ComponentActivity() {
                 pendingNotices.clear()
                 SpeechService.instance?.reportNow()
             }
+
+            // 화면(WebView) 프로세스가 죽어도 앱 전체가 죽지 않게 → 화면만 다시 만듦 (읽기는 계속)
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                (view.parent as? ViewGroup)?.removeView(view)
+                view.destroy()
+                recreate()
+                return true
+            }
         }
         web.webChromeClient = object : WebChromeClient() {
             override fun onShowFileChooser(
@@ -69,6 +82,7 @@ class MainActivity : ComponentActivity() {
             ): Boolean {
                 fileCallback?.onReceiveValue(null)
                 fileCallback = callback
+                warmUpSpeechService()
                 openCamera()
                 return true
             }
@@ -79,6 +93,21 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= 33) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         checkKoreanVoice()
         showBatteryNoticeOnce()
+
+        // 뒤로가기: 앱을 끝내지 않고 뒤로 보냄 (화면과 답안이 그대로 남도록)
+        onBackPressedDispatcher.addCallback(this) { moveTaskToBack(true) }
+    }
+
+    /** 촬영 시점(화면이 켜져 있을 때)에 서비스를 미리 띄워 둠. AI 답을 기다리는 동안 화면이 꺼져도 읽을 수 있도록 */
+    private fun warmUpSpeechService() {
+        if (SpeechService.instance != null) return
+        try {
+            ContextCompat.startForegroundService(
+                this, Intent(this, SpeechService::class.java).setAction(SpeechService.ACTION_WARMUP)
+            )
+        } catch (_: Exception) {
+            // 실패해도 촬영은 계속. 읽기 시작 때 SpeechBridge 가 다시 시도하고 안내함
+        }
     }
 
     override fun onResume() {

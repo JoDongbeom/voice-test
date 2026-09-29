@@ -35,13 +35,13 @@ test("native state updates status and play button", () => {
   assert.equal(el("btnPlay").textContent, "⏸ 일시정지");
 });
 
-test("section navigation uses synced position and does not resend lines", () => {
+test("section navigation uses synced position", () => {
   const { el, window, bridge } = appPage();
   el("btnPlay").click();
   window.onNativeSpeech({ state: "playing", pos: 4, total: 8 }); // Ⅱ 목차(3) 안
   el("btnPrevSection").click();
   el("btnNextSection").click();
-  assert.deepEqual(bridge.calls.slice(2), [["playFrom", 3], ["playFrom", 6]]);
+  assert.deepEqual(bridge.calls.filter((c) => c[0] === "playFrom").slice(1), [["playFrom", 3], ["playFrom", 6]]);
 });
 
 test("pause goes to native, not speechSynthesis", () => {
@@ -95,4 +95,28 @@ test("native notice is shown in the warning area", () => {
   window.onNativeNotice("⚠ 한국어 음성이 없습니다.");
   assert.equal(el("voiceWarn").hidden, false);
   assert.match(el("voiceWarn").textContent, /한국어 음성이 없습니다/);
+});
+
+test("play after the service was closed re-sends the lines", () => {
+  const { el, window, bridge } = appPage();
+  el("btnPlay").click();
+  window.onNativeSpeech({ state: "ended", pos: 0, total: 8 });
+  el("btnPlay").click();
+  assert.deepEqual(bridge.calls.slice(2), [["load", 8, 0.8], ["playFrom", 0]]);
+});
+
+test("native reports do not overwrite the status while AI is analyzing", () => {
+  const { el, window, run } = appPage();
+  run(`setBusy(true); setStatus("AI 분석 중 (1~2분)")`);
+  window.onNativeSpeech({ state: "paused", pos: 2, total: 8 });
+  window.onNativeSpeech({ state: "ended", pos: 0, total: 8 });
+  assert.equal(el("status").textContent, "AI 분석 중 (1~2분)");
+});
+
+test("the last answer survives a page reload", () => {
+  const bridge = fakeBridge();
+  const { el } = loadPage({ bridge, storage: { last_answer: "Ⅰ. 저장된 답안\n* 하나" } });
+  assert.match(el("answer").textContent, /저장된 답안/);
+  el("btnPlay").click();
+  assert.deepEqual(bridge.calls, [["load", 2, 0.8], ["playFrom", 0]]);
 });

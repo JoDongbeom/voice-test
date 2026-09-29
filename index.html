@@ -144,6 +144,7 @@ const JPEG_QUALITY = 0.8;
 const TEST_TEXT = "블루투스 이어폰 음성 테스트입니다. 잘 들리시나요?";
 const KEY_STORAGE = "openai_api_key";
 const RATE_STORAGE = "speech_rate";
+const ANSWER_STORAGE = "last_answer"; // 화면이 다시 만들어져도 답안을 잃지 않도록
 // ===================================
 
 const $ = (id) => document.getElementById(id);
@@ -169,7 +170,8 @@ const synth = window.speechSynthesis;
 
 // 앱(안드로이드) 안에서 열리면 음성은 앱이 담당 (화면이 꺼져도 읽기 위해)
 const nativeSpeech = () => window.AndroidSpeech || null;
-let nativeSent = null; // 앱에 마지막으로 보낸 줄 목록 (같으면 다시 보내지 않음)
+let busy = false;      // AI 분석 중에는 앱의 옛 재생 상태로 상태 칸을 덮지 않음
+function setBusy(b) { busy = b; }
 
 function pickKoreanVoice() {
   if (!synth) return;
@@ -287,10 +289,8 @@ function playFrom(lineIdx) {
   const nat = nativeSpeech();
   if (nat) {
     if (!player.lines.length) return;
-    if (nativeSent !== player.lines) {
-      nat.load(JSON.stringify(player.lines), parseFloat(rateEl.value));
-      nativeSent = player.lines;
-    }
+    // 매번 줄 목록을 같이 보냄: 서비스가 닫혔다 다시 떠도 읽을 내용이 있도록
+    nat.load(JSON.stringify(player.lines), parseFloat(rateEl.value));
     nat.playFrom(Math.max(0, Math.min(lineIdx, player.lines.length - 1)));
     return; // 상태 표시는 onNativeSpeech 가 갱신
   }
@@ -360,6 +360,7 @@ function sectionStarts() {
 window.onNativeSpeech = (s) => {
   player.playing = s.state === "playing";
   if (typeof s.pos === "number") player.pos = s.pos;
+  if (busy) return;
   if (s.state === "ended") {
     $("btnPlay").textContent = "▶ 재생";
     if (!player.quiet) setStatus("대기");
@@ -395,6 +396,16 @@ function refreshKeyState() {
   $("keyState").textContent = getKey() ? "✅ 키가 이 폰에 저장되어 있습니다." : "❌ 저장된 키가 없습니다.";
 }
 refreshKeyState();
+
+// ---------- 답안 표시 / 복원 ----------
+function showAnswer(text) {
+  answerEl.textContent = text + "\n\n(공백 포함 " + text.length.toLocaleString() + "자)";
+}
+const savedAnswer = lsGet(ANSWER_STORAGE);
+if (savedAnswer) {
+  lastAnswer = savedAnswer;
+  showAnswer(savedAnswer);
+}
 
 $("btnSaveKey").addEventListener("click", () => {
   const v = $("apiKey").value.trim();
@@ -496,6 +507,7 @@ $("fileInput").addEventListener("change", async (e) => {
 
   try {
     stopSpeech();
+    setBusy(true);
     setStatus("사진 처리 중");
     const dataUrl = await resizeToDataUrl(file);
 
@@ -503,11 +515,14 @@ $("fileInput").addEventListener("change", async (e) => {
     answerEl.textContent = "…";
     const text = await askOpenAI(key, dataUrl);
 
+    setBusy(false);
     lastAnswer = text;
-    answerEl.textContent = text + "\n\n(공백 포함 " + text.length.toLocaleString() + "자)";
+    lsSet(ANSWER_STORAGE, text);
+    showAnswer(text);
     loadText(text);
     playFrom(0);
   } catch (err) {
+    setBusy(false);
     answerEl.textContent = "";
     const m = describeError(err);
     reportError(m.screen, m.voice);

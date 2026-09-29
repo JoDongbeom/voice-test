@@ -45,6 +45,9 @@ class SpeechService : Service(), TextToSpeech.OnInitListener {
         const val ACTION_NEXT = "com.jodongbeom.voicetest.NEXT"
         const val ACTION_RATE = "com.jodongbeom.voicetest.RATE"
         const val ACTION_CLOSE = "com.jodongbeom.voicetest.CLOSE"
+        /** 화면이 보일 때 미리 서비스를 띄워 둠 (화면이 꺼진 뒤에는 새로 띄울 수 없어서) */
+        const val ACTION_WARMUP = "com.jodongbeom.voicetest.WARMUP"
+        private const val CUSTOM_CLOSE = "close"
         const val EXTRA_LINES = "lines"
         const val EXTRA_INDEX = "index"
         const val EXTRA_RATE = "rate"
@@ -104,6 +107,9 @@ class SpeechService : Service(), TextToSpeech.OnInitListener {
                 override fun onStop() = pause()
                 override fun onSkipToNext() = next()
                 override fun onSkipToPrevious() = prev()
+                override fun onCustomAction(action: String?, extras: android.os.Bundle?) {
+                    if (action == CUSTOM_CLOSE) close()
+                }
             })
             isActive = true
         }
@@ -138,7 +144,12 @@ class SpeechService : Service(), TextToSpeech.OnInitListener {
         // 서비스가 살아 있는 동안은 항상 포그라운드 (안드로이드 12+ 백그라운드 재시작 제한 회피)
         val type = if (Build.VERSION.SDK_INT >= 29) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0
         ServiceCompat.startForeground(this, NOTIF_ID, buildNotification(), type)
+        handle(intent)
+        return START_NOT_STICKY
+    }
 
+    /** 명령 처리. 이미 떠 있는 서비스에는 SpeechBridge 가 메인 스레드에서 직접 호출함 */
+    fun handle(intent: Intent?) {
         when (intent?.action) {
             ACTION_LOAD -> {
                 stopSpeaking()
@@ -154,13 +165,14 @@ class SpeechService : Service(), TextToSpeech.OnInitListener {
             ACTION_PREV -> prev()
             ACTION_NEXT -> next()
             ACTION_RATE -> rate = intent.getFloatExtra(EXTRA_RATE, rate)
-            ACTION_CLOSE -> {
-                pause()
-                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
-                stopSelf()
-            }
+            ACTION_CLOSE -> close()
         }
-        return START_NOT_STICKY
+    }
+
+    private fun close() {
+        pause()
+        ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -253,6 +265,12 @@ class SpeechService : Service(), TextToSpeech.OnInitListener {
         session.setPlaybackState(
             PlaybackStateCompat.Builder()
                 .setActions(actions)
+                // 안드로이드 13+ 잠금화면 조작은 알림 버튼이 아니라 여기서 만들어짐 → 닫기 버튼도 여기 추가
+                .addCustomAction(
+                    PlaybackStateCompat.CustomAction.Builder(
+                        CUSTOM_CLOSE, "닫기", android.R.drawable.ic_menu_close_clear_cancel
+                    ).build()
+                )
                 .setState(
                     if (state.playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED,
                     PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN, 1f
