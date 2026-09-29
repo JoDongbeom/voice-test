@@ -37,18 +37,19 @@ index.html은 `window.AndroidSpeech` 존재 여부로 앱/브라우저를 판단
 - 없으면: 지금처럼 speechSynthesis 플레이어 사용 (웹 버전 그대로 동작)
 
 **JS → 네이티브** (`window.AndroidSpeech`)
+목차 이동 계산(이전/다음 목차, 처음부터)은 이미 검증된 JS 로직을 그대로 쓰고, 네이티브에는 "몇 번 줄부터 읽어라"만 보낸다.
 | 메서드 | 설명 |
 |---|---|
-| `load(json, startIdx)` | 줄 목록 `[{ "chunks": ["..."], "section": true/false }]`을 넘기고 startIdx부터 재생 |
-| `play()` / `pause()` | 현재 줄 처음부터 재생 / 일시정지 |
-| `prevLine()` / `nextLine()` | 줄 이동 후 재생 |
-| `prevSection()` / `nextSection()` | 목차 이동 (이전 목차는 "목차 중간이면 그 목차 처음, 처음이면 앞 목차") |
-| `restart()` | 0번 줄부터 재생 |
+| `load(json, rate)` | 줄 목록 `[{ "chunks": ["..."], "section": true/false }]`과 현재 속도를 넘김 (재생은 안 함) |
+| `playFrom(index)` | index번 줄 처음부터 재생 |
+| `pause()` | 일시정지 (서비스가 떠 있을 때만) |
 | `setRate(r)` | 속도 0.1~1.5, 다음 조각부터 적용 |
-| `hasKoreanVoice()` | 한국어 TTS 사용 가능 여부 (bool) |
 
-**네이티브 → JS**: `window.onNativeSpeech({ state, pos, total, message })`
-- state: `playing` / `paused` / `ended` / `error`
+잠금화면/이어폰의 이전 줄·재생/일시정지·다음 줄은 네이티브(PlayerState)가 직접 처리한다.
+
+**네이티브 → JS**
+- `window.onNativeSpeech({ state, pos, total, message })` — state: `playing` / `paused` / `ended`, message는 "마지막 줄입니다" 같은 안내(선택)
+- `window.onNativeNotice(text)` — 한국어 음성 없음, 알림 권한 거부, 배터리 안내(최초 1회)를 화면 경고 칸에 표시
 - 화면이 꺼져 있는 동안의 호출은 버려져도 된다. 다시 보일 때(onResume) 서비스가 현재 상태를 한 번 보낸다.
 
 테스트 음성, 오류 안내 음성(짧은 1회성)도 같은 `load`로 보내되 JS가 상태 표시를 덮어쓰지 않도록 기존 quiet 처리를 유지한다.
@@ -60,9 +61,10 @@ index.html은 `window.AndroidSpeech` 존재 여부로 앱/브라우저를 판단
 - **촬영**: `WebChromeClient.onShowFileChooser`에서 `MediaStore.ACTION_IMAGE_CAPTURE` + `FileProvider` URI로 후면 카메라 실행, 결과 URI를 file input에 돌려준다. CAMERA 권한 선언 없이 외부 카메라 앱 사용.
 - **TTS**: `TextToSpeech`, `Locale.KOREAN`. 조각마다 `speak(QUEUE_FLUSH/ADD)`와 `UtteranceProgressListener.onDone`으로 다음 조각 진행. 이동/일시정지는 `stop()` 후 해당 줄 처음부터.
 - **포그라운드 서비스**: `foregroundServiceType="mediaPlayback"`, 권한 `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK`, `POST_NOTIFICATIONS`(13+ 런타임 요청), `WAKE_LOCK`.
-  재생 시작 시 `startForeground`. 일시정지/재생 끝이면 `stopForeground(DETACH)`로 알림은 남기되 밀어서 지울 수 있게 하고(알림에서 재개 가능), 알림을 지우면 서비스 종료. 부분 WakeLock은 재생 중에만 잡는다.
+  서비스가 살아 있는 동안은 일시정지 중에도 계속 포그라운드로 둔다(안드로이드 12+의 백그라운드 재시작 제한을 피하려고). 알림에 ✕(닫기) 버튼을 두어 누르면 서비스 종료. 부분 WakeLock은 재생 중에만 잡는다.
 - **MediaSession**: `MediaSessionCompat` 콜백 onPlay/onPause/onSkipToNext(다음 줄)/onSkipToPrevious(이전 줄). 알림은 `MediaStyle`로 ◀ ⏯ ▶.
-  오디오 포커스 요청으로 이어폰 버튼 수신 대상이 되도록 한다.
+  TTS 소리는 TTS 엔진 앱이 내는 소리라 안드로이드가 우리 앱을 "재생 중인 앱"으로 보지 않을 수 있다. 그래서 읽는 동안 **무음 오디오를 우리 앱에서 재생**하고 오디오 포커스를 요청해 이어폰 버튼이 우리 앱으로 오게 한다.
+  전화/다른 앱 재생으로 포커스를 잃거나 이어폰 연결이 끊기면(AUDIO_BECOMING_NOISY) 일시정지한다.
 - **키/속도 저장**: WebView localStorage 그대로 (앱 전용 저장소, 웹과 별개).
 
 ## 5. 빌드·배포
