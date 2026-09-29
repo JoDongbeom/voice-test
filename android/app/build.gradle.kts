@@ -64,3 +64,8 @@ dependencies {
     implementation("androidx.media:media:1.7.0")
     testImplementation("junit:junit:4.13.2")
 }
+
+// CI 로그에 테스트별 결과가 보이도록
+tasks.withType<Test>().configureEach {
+    testLogging { events("passed", "failed", "skipped") }
+}
